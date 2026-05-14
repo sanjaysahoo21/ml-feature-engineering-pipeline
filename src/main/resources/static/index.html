@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ML Feature Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+</head>
+<body>
+    <h2>Real-Time Feature Store</h2>
+    <div id="metrics" style="padding: 10px; background: #eee; margin-bottom: 20px;">
+        <p><strong>Latency / Freshness:</strong> <span id="freshness">Awaiting data...</span></p>
+    </div>
+    <div id="features"></div>
+    <script>
+        var stompClient = null;
+        function connect() {
+            var socket = new SockJS('/ws-dashboard');
+            stompClient = Stomp.over(socket);
+            stompClient.connect({}, function (frame) {
+                stompClient.subscribe('/topic/features', function (message) {
+                    var data = JSON.parse(message.body);
+                    var el = document.getElementById(data.entity_id + '_' + data.feature_name);
+                    if (!el) {
+                        el = document.createElement('div');
+                        el.id = data.entity_id + '_' + data.feature_name;
+                        document.getElementById('features').appendChild(el);
+                    }
+                    el.innerHTML = "<strong>" + data.entity_id + "</strong> | " + data.feature_name + " = " + data.feature_value;
+                    
+                    var computedAt = new Date(data.computed_at);
+                    var freshness = (new Date() - computedAt) + " ms";
+                    document.getElementById('freshness').innerText = freshness;
+                });
+            });
+        }
+        connect();
+    </script>
+</body>
+</html>
