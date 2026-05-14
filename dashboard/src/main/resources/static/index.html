@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ML Feature Pipeline — Observability Dashboard</title>
+  <meta name="description" content="Real-time observability dashboard for the Apache Kafka + Flink feature engineering pipeline." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --accent: #58a6ff; --accent2: #3fb950; --warn: #f85149; --muted: #8b949e;
+      --text: #e6edf3; --text2: #c9d1d9;
+      --card-bg: rgba(22,27,34,0.9);
+      --glow: rgba(88,166,255,0.15);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      background-image:
+        radial-gradient(ellipse at 20% 10%, rgba(88,166,255,0.06) 0%, transparent 60%),
+        radial-gradient(ellipse at 80% 90%, rgba(63,185,80,0.05) 0%, transparent 60%);
+    }
+
+    header {
+      padding: 28px 40px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 14px;
+      background: rgba(13,17,23,0.8);
+      backdrop-filter: blur(10px);
+      position: sticky; top: 0; z-index: 100;
+    }
+    .logo {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    header h1 { font-size: 1.2rem; font-weight: 600; color: var(--text); }
+    header p  { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+    .status-pill {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.3);
+      padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; color: var(--accent2);
+    }
+    .pulse {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--accent2);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.5; transform:scale(1.3); } }
+
+    main { max-width: 1280px; margin: 0 auto; padding: 32px 40px; }
+
+    /* ---- Metrics Row ---- */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px; margin-bottom: 32px;
+    }
+    .metric-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px 22px;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .metric-card:hover { border-color: var(--accent); box-shadow: 0 0 20px var(--glow); }
+    .metric-card label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); display: block; margin-bottom: 10px; }
+    .metric-value {
+      font-size: 1.9rem; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+      color: var(--accent); line-height: 1;
+    }
+    .metric-value.warn { color: var(--warn); }
+    .metric-value.good { color: var(--accent2); }
+    .metric-sub { font-size: 0.72rem; color: var(--muted); margin-top: 6px; }
+
+    /* ---- Two-column layout ---- */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    @media(max-width:900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    /* ---- Cards ---- */
+    .card {
+      background: var(--card-bg); border: 1px solid var(--border);
+      border-radius: 14px; overflow: hidden;
+    }
+    .card-header {
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .card-header h2 { font-size: 0.9rem; font-weight: 600; }
+    .badge {
+      font-size: 0.65rem; font-family: 'JetBrains Mono', monospace;
+      background: rgba(88,166,255,0.12); color: var(--accent);
+      border: 1px solid rgba(88,166,255,0.3);
+      padding: 2px 8px; border-radius: 6px;
+    }
+    .card-body { padding: 20px; }
+
+    /* ---- Entity Viewer ---- */
+    .search-row {
+      display: flex; gap: 10px; margin-bottom: 18px;
+    }
+    #entity-input {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px; color: var(--text);
+      font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
+      outline: none; transition: border-color .2s;
+    }
+    #entity-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
+    #entity-search-btn {
+      background: var(--accent); color: #0d1117;
+      border: none; border-radius: 8px; padding: 10px 20px;
+      font-weight: 600; font-size: 0.85rem; cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    #entity-search-btn:hover  { opacity: .88; }
+    #entity-search-btn:active { transform: scale(.97); }
+
+    .feature-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .feature-table th {
+      text-align: left; padding: 8px 10px;
+      color: var(--muted); font-weight: 500; font-size: 0.72rem;
+      text-transform: uppercase; letter-spacing: .05em;
+      border-bottom: 1px solid var(--border);
+    }
+    .feature-table td {
+      padding: 10px 10px; border-bottom: 1px solid rgba(48,54,61,0.5);
+      vertical-align: middle;
+    }
+    .feature-table tr:last-child td { border-bottom: none; }
+    .feature-table tr { transition: background .15s; }
+    .feature-table tr:hover td { background: rgba(88,166,255,0.04); }
+    .feature-name { font-family: 'JetBrains Mono', monospace; color: var(--accent); }
+    .feature-val  { font-family: 'JetBrains Mono', monospace; color: var(--accent2); font-weight: 500; }
+    .feature-age  { color: var(--muted); font-size: 0.75rem; }
+    .empty-state  { text-align: center; padding: 32px; color: var(--muted); font-size: 0.85rem; }
+
+    /* ---- Live Feed ---- */
+    #live-feed {
+      max-height: 380px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 6px;
+      scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+    }
+    .feed-item {
+      background: rgba(13,17,23,0.6); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 13px;
+      font-size: 0.78rem; font-family: 'JetBrains Mono', monospace;
+      display: flex; gap: 12px; align-items: baseline;
+      animation: fadeIn .25s ease-out;
+    }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
+    .feed-entity { color: var(--accent); min-width: 80px; }
+    .feed-fname  { color: var(--text2); flex: 1; }
+    .feed-fval   { color: var(--accent2); font-weight: 600; min-width: 70px; text-align:right; }
+    .feed-ts     { color: var(--muted); font-size: 0.7rem; }
+
+    /* ---- Freshness bars ---- */
+    .freshness-row {
+      display: flex; align-items: center; gap: 12px;
+      margin-bottom: 14px;
+    }
+    .freshness-label { font-size: 0.78rem; width: 170px; color: var(--text2); flex-shrink: 0; }
+    .freshness-bar-wrap { flex: 1; height: 6px; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .freshness-bar { height: 100%; border-radius: 4px; transition: width .5s ease; background: var(--accent2); }
+    .freshness-val { font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; color: var(--muted); width: 70px; text-align:right; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">⚡</div>
+  <div>
+    <h1>ML Feature Pipeline</h1>
+    <p>Apache Kafka + Apache Flink — Real-Time Feature Engineering</p>
+  </div>
+  <div class="status-pill" id="conn-status">
+    <div class="pulse"></div>
+    <span>Connecting…</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- ===== Metrics Row (REQ-10) ===== -->
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <label>Late Events Dropped</label>
+      <div class="metric-value warn" id="m-late">0</div>
+      <div class="metric-sub">Events outside 30 s watermark</div>
+    </div>
+    <div class="metric-card">
+      <label>Watermark Lag</label>
+      <div class="metric-value" id="m-lag">—</div>
+      <div class="metric-sub">Wall-clock minus last watermark</div>
+    </div>
+    <div class="metric-card">
+      <label>click_rate Freshness</label>
+      <div class="metric-value good" id="m-cr-fresh">—</div>
+      <div class="metric-sub">Time since last user feature update</div>
+    </div>
+    <div class="metric-card">
+      <label>engagement_rate Freshness</label>
+      <div class="metric-value good" id="m-er-fresh">—</div>
+      <div class="metric-sub">Time since last content feature update</div>
+    </div>
+    <div class="metric-card">
+      <label>Total Features Computed</label>
+      <div class="metric-value" id="m-total">0</div>
+      <div class="metric-sub">Across all entities this session</div>
+    </div>
+  </div>
+
+  <!-- ===== Feature Freshness Bars ===== -->
+  <div class="card" style="margin-bottom:24px;">
+    <div class="card-header"><h2>📊 Feature Freshness</h2><span class="badge">REQ-10</span></div>
+    <div class="card-body">
+      <div class="freshness-row">
+        <div class="freshness-label">click_rate</div>
+        <div class="freshness-bar-wrap"><div class="freshness-bar" id="bar-cr" style="width:0%"></div></div>
+        <div class="freshness-val" id="val-cr">—</div>
+      </div>
+      <div class="freshness-row">
+        <div class="freshness-label">avg_dwell_time</div>
+        <div class="freshness-bar-wrap"><div class="freshness-bar" id="bar-adt" style="width:0%;background:#a371f7"></div></div>
+        <div class="freshness-val" id="val-adt">—</div>
+      </div>
+      <div class="freshness-row">
+        <div class="freshness-label">engagement_rate</div>
+        <div class="freshness-bar-wrap"><div class="freshness-bar" id="bar-er" style="width:0%;background:#f0883e"></div></div>
+        <div class="freshness-val" id="val-er">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+
+    <!-- ===== Entity Viewer (REQ-9) ===== -->
+    <div class="card">
+      <div class="card-header"><h2>🔍 Entity Feature Viewer</h2><span class="badge">REQ-9</span></div>
+      <div class="card-body">
+        <div class="search-row">
+          <input id="entity-input" type="text" placeholder="Enter user_id or content_id…" />
+          <button id="entity-search-btn" onclick="searchEntity()">Lookup</button>
+        </div>
+        <div id="entity-results">
+          <div class="empty-state">Enter an entity ID above to view its features.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Live Feature Feed ===== -->
+    <div class="card">
+      <div class="card-header"><h2>📡 Live Feature Feed</h2><span class="badge">REAL-TIME</span></div>
+      <div class="card-body" style="padding:12px">
+        <div id="live-feed">
+          <div class="empty-state">Waiting for Flink to emit features…</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+  // ── State ────────────────────────────────────────────────────────────────
+  let totalFeatures  = 0;
+  let featureStore   = {};   // entityId -> { featureName -> { value, computedAt } }
+  const freshnessRef = {};   // featureName -> last computedAt
+  const MAX_FEED     = 60;
+
+  // ── WebSocket (STOMP) ─────────────────────────────────────────────────────
+  function connect() {
+    const socket = new SockJS('/ws-dashboard');
+    const stomp  = Stomp.over(socket);
+    stomp.debug   = () => {};
+
+    stomp.connect({}, () => {
+      document.getElementById('conn-status').innerHTML =
+        '<div class="pulse"></div><span style="color:var(--accent2)">Live</span>';
+
+      // Feature updates
+      stomp.subscribe('/topic/features', msg => {
+        try { handleFeature(JSON.parse(msg.body)); } catch(e){}
+      });
+
+      // Metrics updates
+      stomp.subscribe('/topic/metrics', msg => {
+        try { handleMetrics(JSON.parse(msg.body)); } catch(e){}
+      });
+    }, err => {
+      document.getElementById('conn-status').innerHTML =
+        '<div class="pulse" style="background:var(--warn)"></div><span style="color:var(--warn)">Reconnecting…</span>';
+      setTimeout(connect, 3000);
+    });
+  }
+
+  // ── Feature handler ───────────────────────────────────────────────────────
+  function handleFeature(data) {
+    const { entity_id, feature_name, feature_value, computed_at } = data;
+    if (!entity_id) return;
+
+    // Update in-memory store
+    if (!featureStore[entity_id]) featureStore[entity_id] = {};
+    featureStore[entity_id][feature_name] = { value: feature_value, computedAt: computed_at };
+
+    // Freshness tracking
+    freshnessRef[feature_name] = computed_at;
+    totalFeatures++;
+    document.getElementById('m-total').textContent = totalFeatures;
+
+    // Update freshness bars
+    updateFreshnessBar('click_rate',    'bar-cr',  'val-cr',  '#3fb950');
+    updateFreshnessBar('avg_dwell_time','bar-adt', 'val-adt', '#a371f7');
+    updateFreshnessBar('engagement_rate','bar-er', 'val-er',  '#f0883e');
+    updateFreshnessMetrics();
+
+    // Refresh entity viewer if the updated entity is currently displayed
+    const currentEntity = document.getElementById('entity-input').value.trim();
+    if (currentEntity === entity_id) renderEntityTable(entity_id);
+
+    // Prepend to live feed
+    prependFeedItem(data);
+  }
+
+  // ── Metrics handler ───────────────────────────────────────────────────────
+  function handleMetrics(data) {
+    if (data.lateEventsDropped !== undefined)
+      document.getElementById('m-late').textContent = data.lateEventsDropped;
+
+    if (data.watermarkLagMs !== undefined) {
+      const lag = data.watermarkLagMs;
+      const el = document.getElementById('m-lag');
+      el.textContent = lag >= 0 ? formatMs(lag) : '—';
+      el.className = 'metric-value ' + (lag > 60000 ? 'warn' : '');
+    }
+  }
+
+  // ── Entity lookup ─────────────────────────────────────────────────────────
+  function searchEntity() {
+    const entityId = document.getElementById('entity-input').value.trim();
+    if (!entityId) return;
+
+    // First try in-memory store (instant)
+    if (featureStore[entityId]) {
+      renderEntityTable(entityId);
+      return;
+    }
+    // Fallback to REST API
+    fetch(`/api/features/${encodeURIComponent(entityId)}`)
+      .then(r => r.json())
+      .then(features => {
+        if (!featureStore[entityId]) featureStore[entityId] = {};
+        features.forEach(f => {
+          featureStore[entityId][f.featureName] = { value: f.featureValue, computedAt: f.computedAt };
+        });
+        renderEntityTable(entityId);
+      })
+      .catch(() => {
+        document.getElementById('entity-results').innerHTML =
+          '<div class="empty-state">Error fetching features. Is the pipeline running?</div>';
+      });
+  }
+
+  function renderEntityTable(entityId) {
+    const features = featureStore[entityId];
+    const el = document.getElementById('entity-results');
+
+    if (!features || Object.keys(features).length === 0) {
+      el.innerHTML = `<div class="empty-state">No features found for <code>${entityId}</code>.</div>`;
+      return;
+    }
+
+    const rows = Object.entries(features).map(([name, rec]) => {
+      const ageMs  = Date.now() - new Date(rec.computedAt).getTime();
+      const val    = typeof rec.value === 'number'
+                     ? rec.value.toFixed(4)
+                     : rec.value;
+      return `<tr>
+        <td class="feature-name">${name}</td>
+        <td class="feature-val">${val}</td>
+        <td class="feature-age">${formatMs(ageMs)} ago</td>
+      </tr>`;
+    }).join('');
+
+    el.innerHTML = `
+      <table class="feature-table">
+        <thead><tr><th>Feature</th><th>Value</th><th>Age</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  // ── Live feed ─────────────────────────────────────────────────────────────
+  function prependFeedItem(data) {
+    const feed = document.getElementById('live-feed');
+    // Clear empty-state placeholder
+    if (feed.querySelector('.empty-state')) feed.innerHTML = '';
+
+    const val = typeof data.feature_value === 'number'
+                ? data.feature_value.toFixed(4)
+                : data.feature_value;
+    const ts  = new Date(data.computed_at).toLocaleTimeString();
+
+    const div = document.createElement('div');
+    div.className = 'feed-item';
+    div.innerHTML = `
+      <span class="feed-entity">${data.entity_id}</span>
+      <span class="feed-fname">${data.feature_name}</span>
+      <span class="feed-fval">${val}</span>
+      <span class="feed-ts">${ts}</span>`;
+
+    feed.prepend(div);
+
+    // Trim old entries
+    while (feed.children.length > MAX_FEED) {
+      feed.removeChild(feed.lastChild);
+    }
+  }
+
+  // ── Freshness helpers ─────────────────────────────────────────────────────
+  function updateFreshnessBar(featureName, barId, valId, color) {
+    const ts = freshnessRef[featureName];
+    if (!ts) return;
+    const ageMs = Date.now() - new Date(ts).getTime();
+    const MAX_FRESH = 300_000; // 5 min reference
+    const pct = Math.max(0, 100 - (ageMs / MAX_FRESH) * 100);
+    const bar = document.getElementById(barId);
+    if (bar) { bar.style.width = pct + '%'; bar.style.background = color; }
+    const valEl = document.getElementById(valId);
+    if (valEl) valEl.textContent = formatMs(ageMs);
+  }
+
+  function updateFreshnessMetrics() {
+    const crTs  = freshnessRef['click_rate'];
+    const erTs  = freshnessRef['engagement_rate'];
+    if (crTs) document.getElementById('m-cr-fresh').textContent = formatMs(Date.now() - new Date(crTs).getTime());
+    if (erTs) document.getElementById('m-er-fresh').textContent = formatMs(Date.now() - new Date(erTs).getTime());
+  }
+
+  function formatMs(ms) {
+    if (ms < 0)      return '—';
+    if (ms < 1000)   return ms + ' ms';
+    if (ms < 60000)  return (ms/1000).toFixed(1) + ' s';
+    return (ms/60000).toFixed(1) + ' min';
+  }
+
+  // ── Poll metrics REST every 5 s (fallback if no WebSocket metric msgs yet) ─
+  setInterval(() => {
+    fetch('/api/metrics').then(r=>r.json()).then(handleMetrics).catch(()=>{});
+    fetch('/api/freshness').then(r=>r.json()).then(d=>{
+      if (d.click_rate_freshness_ms !== undefined)
+        document.getElementById('m-cr-fresh').textContent = formatMs(d.click_rate_freshness_ms);
+      if (d.engagement_rate_freshness_ms !== undefined)
+        document.getElementById('m-er-fresh').textContent = formatMs(d.engagement_rate_freshness_ms);
+    }).catch(()=>{});
+    updateFreshnessBar('click_rate',    'bar-cr',  'val-cr',  '#3fb950');
+    updateFreshnessBar('avg_dwell_time','bar-adt', 'val-adt', '#a371f7');
+    updateFreshnessBar('engagement_rate','bar-er', 'val-er',  '#f0883e');
+    updateFreshnessMetrics();
+  }, 5000);
+
+  // ── Enter key on input ────────────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('entity-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') searchEntity();
+    });
+    connect();
+  });
+</script>
+</body>
+</html>
